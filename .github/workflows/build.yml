@@ -17,8 +17,14 @@ jobs:
       run: sudo apt-get update -qq && sudo apt-get install -y git zip unzip openjdk-17-jdk libffi-dev libssl-dev autoconf libtool pkg-config zlib1g-dev cmake
     - name: Install buildozer
       run: pip install --upgrade buildozer cython==0.29.36
+    - name: Accept Android licenses
+      run: |
+        mkdir -p $HOME/.android
+        echo "count=0" > $HOME/.android/repositories.cfg
+        yes | buildozer android update 2>/dev/null || true
     - name: Build APK
-      run: buildozer -v android debug
+      run: |
+        yes | buildozer -v android debug 2>&1
       timeout-minutes: 60
     - uses: actions/upload-artifact@v4
       with:
