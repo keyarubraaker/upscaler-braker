@@ -1,27 +1,27 @@
-Run sudo apt-get update -qq
-Reading package lists...
-Building dependency tree...
-Reading state information...
-autoconf is already the newest version (2.71-2).
-libffi-dev is already the newest version (3.4.2-4).
-libffi-dev set to manually installed.
-libltdl-dev is already the newest version (2.4.6-15build2).
-libltdl-dev set to manually installed.
-libtool is already the newest version (2.4.6-15build2).
-zip is already the newest version (3.0-12build2).
-libssl-dev is already the newest version (3.0.2-0ubuntu1.25).
-python3-setuptools is already the newest version (59.6.0-1.2ubuntu0.22.04.3).
-unzip is already the newest version (6.0-26ubuntu3.2).
-zlib1g-dev is already the newest version (1:1.2.11.dfsg-2ubuntu9.2).
-python3-pip is already the newest version (22.0.2+dfsg-1ubuntu0.7).
-git is already the newest version (1:2.54.0-0ppa1~ubuntu22.04.1).
-Some packages could not be installed. This may mean that you have
-requested an impossible situation or if you are using the unstable
-distribution that some required packages have not yet been created
-or been moved out of Incoming.
-The following information may help to resolve the situation:
+name: Build APK
 
-The following packages have unmet dependencies:
- libgstreamer1.0-dev : Depends: libunwind-dev
-E: Unable to correct problems, you have held broken packages.
-Error: Process completed with exit code 100.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    - name: Install deps
+      run: sudo apt-get update -qq && sudo apt-get install -y git zip unzip openjdk-17-jdk libffi-dev libssl-dev autoconf libtool pkg-config zlib1g-dev cmake
+    - name: Install buildozer
+      run: pip install --upgrade buildozer cython==0.29.36
+    - name: Build APK
+      run: buildozer -v android debug
+      timeout-minutes: 60
+    - uses: actions/upload-artifact@v4
+      with:
+        name: AnimeUpscaler-APK
+        path: bin/*.apk
+        retention-days: 30
