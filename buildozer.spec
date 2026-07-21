@@ -13,7 +13,7 @@ requirements = python3,kivy==2.2.1,requests,certifi
 orientation = portrait
 fullscreen = 0
 
-android.minapi = 28
+android.minapi = 21
 android.ndk = 25b
 android.ndk_api = 21
 android.archs = arm64-v8a
