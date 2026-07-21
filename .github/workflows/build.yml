@@ -1,1 +1,47 @@
-C:\Users\sanny\OneDrive\Desktop\upscaler braker\apk_build\.github\workflows\build.yml
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y \
+          python3-pip python3-setuptools \
+          git zip unzip openjdk-17-jdk \
+          libffi-dev libssl-dev \
+          autoconf libtool pkg-config \
+          zlib1g-dev libncurses5-dev \
+          cmake libltdl-dev \
+          libgstreamer1.0-dev
+
+    - name: Install buildozer
+      run: |
+        pip install --upgrade buildozer cython==0.29.36
+
+    - name: Build APK
+      run: |
+        buildozer -v android debug
+      timeout-minutes: 60
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: AnimeUpscaler-APK
+        path: bin/*.apk
+        retention-days: 30
