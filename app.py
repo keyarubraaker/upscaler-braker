@@ -9,9 +9,7 @@ from flask_cors import CORS
 import imageio_ffmpeg
 
 FFMPEG  = imageio_ffmpeg.get_ffmpeg_exe()
-FFPROBE = FFMPEG.replace(FFMPEG, FFPROBE)
-if not Path(FFPROBE).exists():
-    FFPROBE = shutil.which(FFPROBE) or FFMPEG
+FFPROBE = shutil.which("ffprobe") or FFMPEG.replace("ffmpeg", "ffprobe")
 
 app = Flask(__name__)
 CORS(app)
