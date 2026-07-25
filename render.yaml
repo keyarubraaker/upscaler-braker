@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: anime-upscaler
+    env: python
+    plan: free
+    buildCommand: |
+      pip install -r requirements.txt
+      apt-get install -y ffmpeg wget unzip
+      wget -q https://github.com/nihui/realcugan-ncnn-vulkan/releases/download/20220728/realcugan-ncnn-vulkan-20220728-ubuntu.zip
+      unzip -q realcugan-ncnn-vulkan-20220728-ubuntu.zip
+      mv realcugan-ncnn-vulkan-20220728-ubuntu/realcugan-ncnn-vulkan /usr/local/bin/
+      chmod +x /usr/local/bin/realcugan-ncnn-vulkan
+      mkdir -p /usr/local/share/realcugan
+      mv realcugan-ncnn-vulkan-20220728-ubuntu/models-se /usr/local/share/realcugan/
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 600
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
