@@ -1,8 +1,8 @@
 """
 Anime Video Upscaler - Web Server
-Flask backend pentru procesare video cu Real-ESRGAN
+Flask backend cu Real-ESRGAN Python (CPU, fara Vulkan)
 """
-import os, subprocess, tempfile, shutil, time, threading, uuid
+import os, subprocess, tempfile, shutil, time, threading, uuid, io
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, render_template_string
 from flask_cors import CORS
@@ -13,12 +13,7 @@ CORS(app)
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "anime_upscaler"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# starea joburilor
 jobs = {}
-
-# ── helper: gaseste realcugan sau ffmpeg ──────────────────────────────────────
-def find_exe(name):
-    return shutil.which(name)
 
 def fmt_time(s):
     s = max(0, int(s))
@@ -26,18 +21,58 @@ def fmt_time(s):
     h, m = divmod(m, 60)
     return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
 
-# ── procesare video ───────────────────────────────────────────────────────────
+# ── procesare video cu Real-ESRGAN Python ────────────────────────────────────
+def upscale_frame_realesrgan(img_np, upsampler, scale):
+    """Upscaleaza un frame numpy RGB."""
+    import numpy as np
+    out, _ = upsampler.enhance(img_np, outscale=scale)
+    return out
+
 def process_video(job_id, input_path, scale, force1080):
     job = jobs[job_id]
-    tmp  = UPLOAD_DIR / job_id
+    tmp = UPLOAD_DIR / job_id
     tmp.mkdir(exist_ok=True)
 
     try:
+        # ── init model ────────────────────────────────────────────────────────
+        job["status"]  = "loading_model"
+        job["message"] = "Încarc modelul Real-ESRGAN..."
+        job["progress"] = 2
+
+        import torch
+        import numpy as np
+        from PIL import Image as PILImage
+
+        try:
+            from basicsr.archs.rrdbnet_arch import RRDBNet
+            from realesrgan import RealESRGANer
+
+            model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64,
+                            num_block=6, num_grow_ch=32, scale=4)
+            model_path = "/tmp/RealESRGAN_x4plus_anime_6B.pth"
+            if not Path(model_path).exists():
+                import urllib.request
+                job["message"] = "Descarc model anime..."
+                urllib.request.urlretrieve(
+                    "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
+                    model_path)
+
+            upsampler = RealESRGANer(
+                scale=scale, model_path=model_path, model=model,
+                tile=256, tile_pad=10, pre_pad=0, half=False, gpu_id=None)
+            use_realesrgan = True
+            job["message"] = "✅ Model Real-ESRGAN încărcat"
+
+        except Exception as e:
+            job["message"] = f"⚠ Real-ESRGAN unavailable ({e}), folosesc Lanczos"
+            use_realesrgan = False
+            upsampler = None
+
+        # ── video info ────────────────────────────────────────────────────────
         job["status"]  = "extracting"
         job["message"] = "Extrag frames..."
         job["progress"] = 5
 
-        # video info
         r = subprocess.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json",
              "-show_streams", "-show_format", str(input_path)],
@@ -56,7 +91,7 @@ def process_video(job_id, input_path, scale, force1080):
         frames_in.mkdir()
         frames_out.mkdir()
 
-        # resize daca force1080
+        # resize dacă force1080
         if force1080 and scale == 2:
             target_h = 540
             target_w = int(w * target_h / h) & ~1
@@ -65,60 +100,67 @@ def process_video(job_id, input_path, scale, force1080):
             target_w, target_h = w, h
             vf = []
 
-        cmd_extract = ["ffmpeg", "-i", str(input_path),
-                       "-qscale:v", "1", "-qmin", "1"] + vf + [
-                       str(frames_in / "frame%08d.png"),
-                       "-y", "-loglevel", "error"]
-        subprocess.run(cmd_extract, check=True)
+        subprocess.run(
+            ["ffmpeg", "-i", str(input_path),
+             "-qscale:v", "1", "-qmin", "1"] + vf +
+            [str(frames_in / "frame%08d.png"), "-y", "-loglevel", "error"],
+            check=True)
 
         frame_files = sorted(frames_in.glob("*.png"))
         n_frames    = len(frame_files)
         if n_frames == 0:
             raise Exception("Nu s-au extras frames")
 
-        job["message"]    = f"✅ {n_frames} frames extrase"
-        job["n_frames"]   = n_frames
-        job["progress"]   = 10
+        job["message"]  = f"✅ {n_frames} frames extrase"
+        job["n_frames"] = n_frames
+        job["progress"] = 10
 
-        # upscale cu realcugan
+        # ── upscale frame cu frame ────────────────────────────────────────────
         job["status"]  = "upscaling"
         job["message"] = f"Upscaling {n_frames} frames..."
-
-        cugan_exe = find_exe("realesrgan-ncnn-vulkan") or find_exe("realcugan-ncnn-vulkan")
-        if not cugan_exe:
-            raise Exception("realcugan/realesrgan nu e instalat pe server")
-
-        cmd_up = [cugan_exe,
-                  "-i", str(frames_in),
-                  "-o", str(frames_out),
-                  "-n", "up2x-no-denoise",
-                  "-s", str(scale),
-                  "-j", "1:2:1"]
-        proc = subprocess.Popen(cmd_up, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL)
-
         start = time.time()
-        while proc.poll() is None:
-            done = len(list(frames_out.glob("*.png")))
+
+        for i, fp in enumerate(frame_files):
+            if job.get("cancelled"):
+                return
+
+            img = np.array(PILImage.open(fp).convert("RGB"))
+
+            if use_realesrgan and upsampler:
+                try:
+                    out = upscale_frame_realesrgan(img, upsampler, scale)
+                except Exception:
+                    out = np.array(PILImage.fromarray(img).resize(
+                        (img.shape[1]*scale, img.shape[0]*scale),
+                        PILImage.LANCZOS))
+            else:
+                out = np.array(PILImage.fromarray(img).resize(
+                    (img.shape[1]*scale, img.shape[0]*scale),
+                    PILImage.LANCZOS))
+
+            PILImage.fromarray(out.astype('uint8')).save(
+                str(frames_out / fp.name))
+
+            done    = i + 1
             elapsed = time.time() - start
             fps_p   = done / elapsed if elapsed > 0 else 0
             eta     = (n_frames - done) / fps_p if fps_p > 0 else 0
-            prog    = 10 + int((done / max(n_frames, 1)) * 80)
+            prog    = 10 + int((done / n_frames) * 80)
+
             job["progress"] = prog
             job["message"]  = f"Upscaling {done}/{n_frames} ({fps_p:.1f} fr/s) ETA {fmt_time(eta)}"
             job["done"]     = done
-            time.sleep(1)
 
         n_up = len(list(frames_out.glob("*.png")))
         if n_up == 0:
             raise Exception("0 frames upscalate")
 
-        # audio
+        # ── audio + asamblare ─────────────────────────────────────────────────
         job["status"]  = "assembling"
         job["message"] = "Asamblare video..."
         job["progress"] = 92
 
-        audio = tmp / "audio.aac"
+        audio     = tmp / "audio.aac"
         has_audio = subprocess.run(
             ["ffmpeg", "-i", str(input_path), "-vn", "-acodec", "copy",
              str(audio), "-y", "-loglevel", "error"],
@@ -135,18 +177,17 @@ def process_video(job_id, input_path, scale, force1080):
             cmd_ass += ["-c:v", "libx264", "-crf", "16", "-preset", "fast"]
         cmd_ass += ["-pix_fmt", "yuv420p", str(out_path),
                     "-y", "-loglevel", "error"]
-
         subprocess.run(cmd_ass, check=True)
 
         job["status"]   = "done"
         job["progress"] = 100
-        job["message"]  = f"✅ Gata! {n_frames} frames upscalate"
+        job["message"]  = f"✅ Gata! {n_frames} frames"
         job["output"]   = str(out_path)
         job["out_size"] = out_path.stat().st_size
 
     except Exception as e:
-        job["status"]  = "error"
-        job["message"] = f"❌ Eroare: {e}"
+        job["status"]   = "error"
+        job["message"]  = f"❌ Eroare: {e}"
         job["progress"] = 0
 
 # ── routes ────────────────────────────────────────────────────────────────────
