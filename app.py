@@ -6,6 +6,12 @@ import os, subprocess, tempfile, shutil, time, threading, uuid, io
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, render_template_string
 from flask_cors import CORS
+import imageio_ffmpeg
+
+FFMPEG  = imageio_ffmpeg.get_ffmpeg_exe()
+FFPROBE = FFMPEG.replace(FFMPEG, FFPROBE)
+if not Path(FFPROBE).exists():
+    FFPROBE = shutil.which(FFPROBE) or FFMPEG
 
 app = Flask(__name__)
 CORS(app)
@@ -120,7 +126,7 @@ def process_video(job_id, input_path, scale, force1080):
         job["progress"] = 5
 
         r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
+            [FFPROBE, "-v", "quiet", "-print_format", "json",
              "-show_streams", "-show_format", str(input_path)],
             capture_output=True, text=True, timeout=30)
         import json as _json
@@ -147,7 +153,7 @@ def process_video(job_id, input_path, scale, force1080):
             vf = []
 
         subprocess.run(
-            ["ffmpeg", "-i", str(input_path),
+            [FFMPEG, "-i", str(input_path),
              "-qscale:v", "1", "-qmin", "1"] + vf +
             [str(frames_in / "frame%08d.png"), "-y", "-loglevel", "error"],
             check=True)
@@ -208,13 +214,13 @@ def process_video(job_id, input_path, scale, force1080):
 
         audio     = tmp / "audio.aac"
         has_audio = subprocess.run(
-            ["ffmpeg", "-i", str(input_path), "-vn", "-acodec", "copy",
+            [FFMPEG, "-i", str(input_path), "-vn", "-acodec", "copy",
              str(audio), "-y", "-loglevel", "error"],
             capture_output=True).returncode == 0
 
         out_path = tmp / f"upscaled_{uuid.uuid4().hex[:8]}.mp4"
         pattern  = str(frames_out / "frame%08d.png")
-        cmd_ass  = ["ffmpeg", "-framerate", str(fps), "-i", pattern]
+        cmd_ass  = [FFMPEG, "-framerate", str(fps), "-i", pattern]
         if has_audio:
             cmd_ass += ["-i", str(audio),
                         "-c:v", "libx264", "-crf", "16", "-preset", "fast",
@@ -293,7 +299,7 @@ def download(job_id):
 
 @app.route("/ping")
 def ping():
-    return jsonify({"status": "ok", "ffmpeg": bool(find_exe("ffmpeg")),
+    return jsonify({"status": "ok", FFMPEG: bool(find_exe(FFMPEG)),
                     "cugan": bool(find_exe("realcugan-ncnn-vulkan") or
                                   find_exe("realesrgan-ncnn-vulkan"))})
 
